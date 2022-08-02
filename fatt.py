@@ -69,11 +69,8 @@ class ProcessPackets:
                                self.fingerprint == 'all'):
             # Extract SSH identification string and correlate with KEXINIT msg
             if 'protocol' in packet.ssh.field_names:
-                key = '{}:{}_{}:{}'.format(
-                    packet.ip.src,
-                    packet.tcp.srcport,
-                    packet.ip.dst,
-                    packet.tcp.dstport)
+                key = f'{packet.ip.src}:{packet.tcp.srcport}_{packet.ip.dst}:{packet.tcp.dstport}'
+
                 self.protocol_dict[key] = packet.ssh.protocol
             if 'message_code' not in packet.ssh.field_names:
                 return
@@ -120,8 +117,6 @@ class ProcessPackets:
                 self.logger.info(json.dumps(record))
             return
 
-        # [ TLS ]
-        # TODO: extract tls certificates
         elif proto == 'TLS' and ('tls' in self.fingerprint or
                                  self.fingerprint == 'all'):
             if 'record_content_type' not in packet.tls.field_names:
@@ -133,7 +128,7 @@ class ProcessPackets:
             if 'handshake_type' not in packet.tls.field_names:
                 return
             htype = packet.tls.handshake_type
-            if not (htype == '1' or htype == '2'):
+            if htype not in ['1', '2']:
                 return
             # log the anomalous / retransmission packets
             if ("analysis_retransmission" in packet.tcp.field_names or
@@ -172,49 +167,44 @@ class ProcessPackets:
                 self.logger.info(json.dumps(record))
             return
 
-        # [ RDP ]
         elif proto == 'RDP' and ('rdp' in self.fingerprint or
                                  self.fingerprint == 'all'):
             # Extract RDP cookie & negotiate request and correlate with ClientData msg
             key = None
-            if 'rt_cookie' or 'negreq_requestedprotocols':
-                key = '{}:{}_{}:{}'.format(
-                    packet.ip.src,
-                    packet.tcp.srcport,
-                    packet.ip.dst,
-                    packet.tcp.dstport)
-                if 'rt_cookie' in packet.rdp.field_names:
-                    cookie = packet.rdp.rt_cookie.replace('Cookie: ', '')
-                    self.rdp_dict[key]["cookie"] = cookie
-                if 'negreq_requestedprotocols' in packet.rdp.field_names:
-                    req_protos = packet.rdp.negreq_requestedprotocols
-                    self.rdp_dict[key]["req_protos"] = req_protos
-                    # TLS/CredSSP (not standard RDP security protocols)
-                    if req_protos != "0x00000000":
-                        record = {
-                            "timestamp": packet.sniff_time.isoformat(),
-                            "sourceIp": packet.ip.src,
-                            "destinationIp": packet.ip.dst,
-                            "sourcePort": packet.tcp.srcport,
-                            "destinationPort": packet.tcp.dstport,
-                            "protocol": "rdp",
-                            "rdp": {
-                                "requestedProtocols": req_protos
-                            }
+            key = f'{packet.ip.src}:{packet.tcp.srcport}_{packet.ip.dst}:{packet.tcp.dstport}'
+
+            if 'rt_cookie' in packet.rdp.field_names:
+                cookie = packet.rdp.rt_cookie.replace('Cookie: ', '')
+                self.rdp_dict[key]["cookie"] = cookie
+            if 'negreq_requestedprotocols' in packet.rdp.field_names:
+                req_protos = packet.rdp.negreq_requestedprotocols
+                self.rdp_dict[key]["req_protos"] = req_protos
+                # TLS/CredSSP (not standard RDP security protocols)
+                if req_protos != "0x00000000":
+                    record = {
+                        "timestamp": packet.sniff_time.isoformat(),
+                        "sourceIp": packet.ip.src,
+                        "destinationIp": packet.ip.dst,
+                        "sourcePort": packet.tcp.srcport,
+                        "destinationPort": packet.tcp.dstport,
+                        "protocol": "rdp",
+                        "rdp": {
+                            "requestedProtocols": req_protos
                         }
-                        if self.pout:
-                            tmp = (
-                                '{sip}:{sp} -> {dip}:{dp} [RDP] req_protocols={proto}')
-                            tmp = tmp.format(
-                                sip=record['sourceIp'],
-                                sp=record['sourcePort'],
-                                dip=record['destinationIp'],
-                                dp=record['destinationPort'],
-                                proto=record['rdp']['requestedProtocols']
-                            )
-                            print(tmp)
-                        if self.jlog:
-                            self.logger.info(json.dumps(record))
+                    }
+                    if self.pout:
+                        tmp = (
+                            '{sip}:{sp} -> {dip}:{dp} [RDP] req_protocols={proto}')
+                        tmp = tmp.format(
+                            sip=record['sourceIp'],
+                            sp=record['sourcePort'],
+                            dip=record['destinationIp'],
+                            dp=record['destinationPort'],
+                            proto=record['rdp']['requestedProtocols']
+                        )
+                        print(tmp)
+                    if self.jlog:
+                        self.logger.info(json.dumps(record))
             if 'clientdata' not in packet.rdp.field_names:
                 return
             if ("analysis_retransmission" in packet.tcp.field_names or
@@ -242,9 +232,9 @@ class ProcessPackets:
                 self.logger.info(json.dumps(record))
             return
 
-        # [ HTTP ]
-        elif (proto == 'HTTP' or proto == 'DATA-TEXT-LINES') and \
-                ('http' in self.fingerprint or self.fingerprint == 'all'):
+        elif proto in ['HTTP', 'DATA-TEXT-LINES'] and (
+            ('http' in self.fingerprint or self.fingerprint == 'all')
+        ):
             if 'request' in packet.http.field_names:
                 record = self.client_http(packet)
                 # Print the result
@@ -277,9 +267,9 @@ class ProcessPackets:
                 self.logger.info(json.dumps(record))
             return
 
-        # [ QUIC ]
-        elif (proto == 'GQUIC' or proto == 'QUIC') and\
-                ('quic' in self.fingerprint or self.fingerprint == 'all'):
+        elif proto in ['GQUIC', 'QUIC'] and (
+            ('quic' in self.fingerprint or self.fingerprint == 'all')
+        ):
             if 'tag' in packet.gquic.field_names:
                 if packet.gquic.tag == 'CHLO':
                     record = self.client_gquic(packet)
@@ -306,14 +296,9 @@ class ProcessPackets:
         """returns HASSH (i.e. SSH Client Fingerprint)
         HASSH = md5(KEX;EACTS;MACTS;CACTS)
         """
-        protocol = None
-        key = '{}:{}_{}:{}'.format(
-            packet.ip.src,
-            packet.tcp.srcport,
-            packet.ip.dst,
-            packet.tcp.dstport)
-        if key in self.protocol_dict:
-            protocol = self.protocol_dict[key]
+        key = f'{packet.ip.src}:{packet.tcp.srcport}_{packet.ip.dst}:{packet.tcp.dstport}'
+
+        protocol = self.protocol_dict[key] if key in self.protocol_dict else None
         # hassh fields
         ckex = ceacts = cmacts = ccacts = ""
         if 'kex_algorithms' in packet.ssh.field_names:
@@ -341,7 +326,7 @@ class ProcessPackets:
         # Create hassh
         hassh_str = ';'.join([ckex, ceacts, cmacts, ccacts])
         hassh = md5(hassh_str.encode()).hexdigest()
-        record = {
+        return {
             "timestamp": packet.sniff_time.isoformat(),
             "sourceIp": packet.ip.src,
             "destinationIp": packet.ip.dst,
@@ -362,23 +347,17 @@ class ProcessPackets:
                 "ceastc": ceastc,
                 "cmastc": cmastc,
                 "ccastc": ccastc,
-                "cshka": cshka
-            }
+                "cshka": cshka,
+            },
         }
-        return record
 
     def server_hassh(self, packet):
         """returns HASSHServer (i.e. SSH Server Fingerprint)
         HASSHServer = md5(KEX;EASTC;MASTC;CASTC)
         """
-        protocol = None
-        key = '{}:{}_{}:{}'.format(
-            packet.ip.src,
-            packet.tcp.srcport,
-            packet.ip.dst,
-            packet.tcp.dstport)
-        if key in self.protocol_dict:
-            protocol = self.protocol_dict[key]
+        key = f'{packet.ip.src}:{packet.tcp.srcport}_{packet.ip.dst}:{packet.tcp.dstport}'
+
+        protocol = self.protocol_dict[key] if key in self.protocol_dict else None
         # hasshServer fields
         skex = seastc = smastc = scastc = ""
         if 'kex_algorithms' in packet.ssh.field_names:
@@ -406,7 +385,7 @@ class ProcessPackets:
         # Create hasshServer
         hasshs_str = ';'.join([skex, seastc, smastc, scastc])
         hasshs = md5(hasshs_str.encode()).hexdigest()
-        record = {
+        return {
             "timestamp": packet.sniff_time.isoformat(),
             "sourceIp": packet.ip.src,
             "destinationIp": packet.ip.dst,
@@ -427,10 +406,9 @@ class ProcessPackets:
                 "seacts": seacts,
                 "smacts": smacts,
                 "scacts": scacts,
-                "sshka": sshka
-            }
+                "sshka": sshka,
+            },
         }
-        return record
 
     def client_ja3(self, packet):
         # GREASE_TABLE Ref: https://tools.ietf.org/html/draft-davidben-tls-grease-00
@@ -470,7 +448,7 @@ class ProcessPackets:
         ja3_string = ','.join([
             tls_version, ciphers, extensions, elliptic_curve, ec_pointformat])
         ja3 = md5(ja3_string.encode()).hexdigest()
-        record = {
+        return {
             "timestamp": packet.sniff_time.isoformat(),
             "sourceIp": packet.ip.src,
             "destinationIp": packet.ip.dst,
@@ -485,10 +463,9 @@ class ProcessPackets:
                 "ja3Ciphers": ciphers,
                 "ja3Extensions": extensions,
                 "ja3Ec": elliptic_curve,
-                "ja3EcFmt": ec_pointformat
-            }
+                "ja3EcFmt": ec_pointformat,
+            },
         }
-        return record
 
     def server_ja3(self, packet):
         # GREASE_TABLE Ref: https://tools.ietf.org/html/draft-davidben-tls-grease-00
@@ -515,7 +492,7 @@ class ProcessPackets:
         ja3s_string = ','.join([
             tls_version, ciphers, extensions])
         ja3s = md5(ja3s_string.encode()).hexdigest()
-        record = {
+        return {
             "timestamp": packet.sniff_time.isoformat(),
             "sourceIp": packet.ip.src,
             "destinationIp": packet.ip.dst,
@@ -527,10 +504,9 @@ class ProcessPackets:
                 "ja3sAlgorithms": ja3s_string,
                 "ja3sVersion": tls_version,
                 "ja3sCiphers": ciphers,
-                "ja3sExtensions": extensions
-            }
+                "ja3sExtensions": extensions,
+            },
         }
-        return record
 
     def client_rdfp(self, packet):
         """returns ClientData message fields and RDFP (experimental fingerprint)
@@ -538,18 +514,15 @@ class ProcessPackets:
         """
         # RDP fields
         verMajor = verMinor = desktopWidth = desktopHeight = colorDepth = \
-            sasSequence = keyboardLayout = clientBuild = clientName = \
-            keyboardSubtype = keyboardType = keyboardFuncKey = postbeta2ColorDepth \
-            = clientProductId = serialNumber = highColorDepth = \
-            supportedColorDepths = earlyCapabilityFlags = clientDigProductId = \
-            connectionType = pad1Octet = clusterFlags = encryptionMethods = \
-            extEncMethods = channelCount = channelDef = cookie = req_protos = ""
+                sasSequence = keyboardLayout = clientBuild = clientName = \
+                keyboardSubtype = keyboardType = keyboardFuncKey = postbeta2ColorDepth \
+                = clientProductId = serialNumber = highColorDepth = \
+                supportedColorDepths = earlyCapabilityFlags = clientDigProductId = \
+                connectionType = pad1Octet = clusterFlags = encryptionMethods = \
+                extEncMethods = channelCount = channelDef = cookie = req_protos = ""
 
-        key = '{}:{}_{}:{}'.format(
-            packet.ip.src,
-            packet.tcp.srcport,
-            packet.ip.dst,
-            packet.tcp.dstport)
+        key = f'{packet.ip.src}:{packet.tcp.srcport}_{packet.ip.dst}:{packet.tcp.dstport}'
+
         if key in self.rdp_dict and "cookie" in self.rdp_dict[key]:
             cookie = self.rdp_dict[key]["cookie"]
         if key in self.rdp_dict and "req_protos" in self.rdp_dict[key]:
@@ -642,7 +615,7 @@ class ProcessPackets:
                     "name": name,
                     "options": options
                 }
-                channelDef_temp.append("{}:{}".format(name, options))
+                channelDef_temp.append(f"{name}:{options}")
             channelDef = '-'.join(channelDef_temp)
 
         # Create RDFP
@@ -651,7 +624,7 @@ class ProcessPackets:
             channelDef])
 
         rdfp = md5(rdfp_str.encode()).hexdigest()
-        record = {
+        return {
             "timestamp": packet.sniff_time.isoformat(),
             "sourceIp": packet.ip.src,
             "destinationIp": packet.ip.dst,
@@ -688,10 +661,9 @@ class ProcessPackets:
                 "clusterFlags": clusterFlags,
                 "encryptionMethods": encryptionMethods,
                 "extEncMethods": extEncMethods,
-                "channelDefArray": channelDefArray
-            }
+                "channelDefArray": channelDefArray,
+            },
         }
-        return record
 
     def client_http(self, packet):
         # TODO: log full http req header
@@ -714,7 +686,7 @@ class ProcessPackets:
             requestMethod = packet.http.request_method
         client_header_ordering = ','.join(req_headers)
         client_header_hash = md5(client_header_ordering.encode('utf-8')).hexdigest()
-        record = {
+        return {
             "timestamp": packet.sniff_time.isoformat(),
             "sourceIp": packet.ip.src,
             "destinationIp": packet.ip.dst,
@@ -728,10 +700,9 @@ class ProcessPackets:
                 "requestMethod": requestMethod,
                 "userAgent": ua,
                 "clientHeaderOrder": client_header_ordering,
-                "clientHeaderHash": client_header_hash
-            }
+                "clientHeaderHash": client_header_hash,
+            },
         }
-        return record
 
     def server_http(self, packet):
         # TODO: log full http resp header
@@ -755,7 +726,7 @@ class ProcessPackets:
             responseCode = packet.http.response_code
         if 'content_length' in packet.http.field_names:
             contentLength = packet.http.content_length
-        record = {
+        return {
             "timestamp": packet.sniff_time.isoformat(),
             "sourceIp": packet.ip.src,
             "destinationIp": packet.ip.dst,
@@ -768,15 +739,14 @@ class ProcessPackets:
                 "responseCode": responseCode,
                 "contentLength": contentLength,
                 "serverHeaderOrder": server_header_ordering,
-                "serverHeaderHash": server_header_hash
-            }
+                "serverHeaderHash": server_header_hash,
+            },
         }
-        return record
 
     def client_gquic(self, packet):
         # https://tools.ietf.org/html/draft-ietf-quic-transport-20
         sni = uaid = ver = stk = pdmd = ccs = ccrt = aead = scid = smhl = mids \
-            = kexs = xlct = copt = ccrt = None
+                = kexs = xlct = copt = ccrt = None
         if 'tag_sni' in packet.gquic.field_names:
             sni = packet.gquic.tag_sni
         if 'tag_uaid' in packet.gquic.field_names:
@@ -807,7 +777,7 @@ class ProcessPackets:
             copt = packet.gquic.tag_copt
         if 'tag_ccrt' in packet.gquic.field_names:
             ccrt = packet.gquic.tag_ccrt.raw_value
-        record = {
+        return {
             "timestamp": packet.sniff_time.isoformat(),
             "sourceIp": packet.ip.src,
             "destinationIp": packet.ip.dst,
@@ -832,25 +802,24 @@ class ProcessPackets:
                 "pdmd": pdmd,
                 "ccs": ccs,
                 "ccrt": ccrt,
-                "scid": scid
-            }
+                "scid": scid,
+            },
         }
-        return record
 
 
 def event_log(packet, event):
     """log the anomalous packets"""
     if event == "retransmission":
         event_message = "This packet is a (suspected) retransmission"
-    # Report the event (only for JSON output)
-    msg = {"timestamp": packet.sniff_time.isoformat(),
-           "eventType": event,
-           "eventMessage": event_message,
-           "sourceIp": packet.ip.src,
-           "destinationIp": packet.ip.dst,
-           "sourcePort": packet.tcp.srcport,
-           "destinationPort": packet.tcp.dstport}
-    return msg
+    return {
+        "timestamp": packet.sniff_time.isoformat(),
+        "eventType": event,
+        "eventMessage": event_message,
+        "sourceIp": packet.ip.src,
+        "destinationIp": packet.ip.dst,
+        "sourcePort": packet.tcp.srcport,
+        "destinationPort": packet.tcp.dstport,
+    }
 
 
 def parse_cmd_args():
@@ -929,9 +898,7 @@ def main():
             cap.close()
             cap.eventloop.stop()
         except Exception as e:
-            print('Error: {}'.format(e))
-            pass
-    # Process directory of PCAP files
+            print(f'Error: {e}')
     elif args.read_directory:
         files = [f.path for f in os.scandir(args.read_directory)
                  if not f.name.startswith('.') and not f.is_dir() and
@@ -949,10 +916,7 @@ def main():
                 cap.close()
                 cap.eventloop.stop()
             except Exception as e:
-                print('Error: {}'.format(e))
-                pass
-
-    # Capture live network traffic
+                print(f'Error: {e}')
     elif args.interface:
         if args.write_pcap:
             DISPLAY_FILTER = None
